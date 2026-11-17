@@ -1,9 +1,11 @@
 import json
+import os
 from datetime import date
 from pathlib import Path
 from uuid import uuid4
 
 import flet as ft
+from flet_webview import WebView
 
 
 DATA_FILE = Path.home() / ".daily_homework_tracker.json"
@@ -125,6 +127,19 @@ def get_assignment_summary(today=None, assignments=None):
     }
 
 
+def get_runtime_port():
+    raw_port = os.environ.get("FLET_PORT") or os.environ.get("PORT")
+    if raw_port is None:
+        return 0
+    try:
+        port = int(raw_port)
+    except ValueError:
+        return 0
+    if 1 <= port <= 65535:
+        return port
+    return 0
+
+
 def main(page: ft.Page):
     page.title = "宿題管理 | しおりノート"
     page.theme_mode = ft.ThemeMode.LIGHT
@@ -217,12 +232,12 @@ def main(page: ft.Page):
     def add_assignment(event=None):
         try:
             assignment = create_assignment(
-                class_input.value or "",
+                class_input.text or class_input.value or "",
                 title_input.value or "",
                 due_date_input.value or "",
             )
         except ValueError as error:
-            status_text.value = f"{error} 期限は 2026-10-29、2026/10/29 の形式で入力できます。"
+            status_text.value = f"{error} 期限をカレンダーから選択してください。"
             status_text.visible = True
             page.update()
             return
@@ -232,8 +247,10 @@ def main(page: ft.Page):
             render()
             return
         class_input.value = ""
+        class_input.text = ""
         title_input.value = ""
         due_date_input.value = ""
+        due_date_picker.value = None
         render()
 
     def toggle_assignment(task_id):
@@ -258,8 +275,13 @@ def main(page: ft.Page):
         return is_all_assignments_done(assignments)
 
     def play_music(track_id):
-        url = MUSIC_TRACKS.get(track_id, MUSIC_TRACKS["1"])
-        page.launch_url(url)
+        music_player.content = WebView(
+            url=MUSIC_TRACKS.get(track_id, MUSIC_TRACKS["1"]),
+            width=music_player.width,
+            height=music_player.height,
+        )
+        music_player.visible = True
+        page.update()
 
     def render():
         summary = get_assignment_summary(date.today(), assignments)
@@ -278,6 +300,7 @@ def main(page: ft.Page):
         creator_photo.visible = is_done
 
         class_names = sorted({assignment["class_name"] for assignment in assignments})
+        class_input.options = [ft.dropdown.Option(name, name) for name in class_names]
         class_dropdown.options = [ft.dropdown.Option("all", "すべてのクラス")] + [ft.dropdown.Option(name, name) for name in class_names]
         class_dropdown.value = current_class_filter
         class_dropdown.disabled = not class_names
@@ -388,9 +411,46 @@ def main(page: ft.Page):
     for key, label in (("all", "すべて"), ("active", "未完了"), ("due_soon", "期限が近い"), ("done", "完了")):
         filter_buttons[key] = ft.TextButton(label, on_click=lambda event, value=key: set_filter(value))
 
-    class_input = ft.TextField(label="クラス名", hint_text="例: 数学", expand=True)
+    class_input = ft.Dropdown(
+        label="クラス名",
+        hint_text="選択または入力",
+        options=[],
+        editable=True,
+        enable_filter=True,
+        on_select=lambda event: setattr(event.control, "text", event.control.value),
+        expand=True,
+    )
     title_input = ft.TextField(label="宿題", hint_text="例: 予習ノート3ページ", expand=True)
-    due_date_input = ft.TextField(label="期限", hint_text="YYYY-MM-DD", expand=True)
+
+    def open_due_date_picker(event):
+        due_date_picker.value = _parse_due_date(due_date_input.value)
+        page.show_dialog(due_date_picker)
+
+    def set_due_date(event):
+        if due_date_picker.value is not None:
+            due_date_input.value = due_date_picker.value.isoformat()
+            status_text.value = ""
+            status_text.visible = False
+            page.update()
+
+    due_date_picker = ft.DatePicker(
+        locale=ft.Locale("ja", "JP"),
+        current_date=date.today(),
+        first_date=date(1900, 1, 1),
+        last_date=date(2100, 12, 31),
+        help_text="宿題の期限を選択",
+        confirm_text="決定",
+        cancel_text="キャンセル",
+        on_change=set_due_date,
+    )
+    due_date_input = ft.TextField(
+        label="期限",
+        hint_text="日付を選択",
+        read_only=True,
+        suffix_icon=ft.Icons.CALENDAR_MONTH,
+        on_click=open_due_date_picker,
+        expand=True,
+    )
     status_text = ft.Text(color=RED, size=12)
     status_text.visible = False
 
@@ -426,6 +486,7 @@ def main(page: ft.Page):
         )
         for key in ("1", "2", "3", "4")
     }
+    music_player = ft.Container(width=700, height=394, visible=False)
     creator_message = ft.Text("宿題完了！お疲れさまです。", size=12, color=GREEN, weight=ft.FontWeight.BOLD)
     creator_message.visible = False
     creator_photo = ft.Image(
@@ -513,6 +574,7 @@ def main(page: ft.Page):
                                 [
                                     ft.Text("音楽を流す", size=12, color=MUTED, weight=ft.FontWeight.BOLD),
                                     ft.Row(list(music_buttons.values()), spacing=8),
+                                    music_player,
                                     celebration_panel,
                                 ],
                                 spacing=10,
@@ -554,6 +616,11 @@ def main(page: ft.Page):
         app_container.width = content_width
         content.width = content_width
         app_card.width = content_width
+        music_player.width = max(260, content_width - 40)
+        music_player.height = music_player.width * 9 / 16
+        if isinstance(music_player.content, WebView):
+            music_player.content.width = music_player.width
+            music_player.content.height = music_player.height
         if viewport_width < 640:
             composer.controls[0] = ft.Column(
                 [class_input, title_input, due_date_input],
@@ -578,4 +645,4 @@ def main(page: ft.Page):
 
 
 if __name__ == "__main__":
-    ft.run(main, view=ft.AppView.WEB_BROWSER)
+    ft.run(main, view=ft.AppView.WEB_BROWSER, port=get_runtime_port())
